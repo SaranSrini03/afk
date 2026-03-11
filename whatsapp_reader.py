@@ -4,6 +4,7 @@ WhatsApp Web automation via Selenium: QR login and real-time message reading.
 
 import os
 import random
+import sys
 import time
 import threading
 from selenium import webdriver
@@ -16,6 +17,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
+try:
+    import winsound
+except ImportError:
+    winsound = None
+
 
 WA_URL = "https://web.whatsapp.com"
 QR_TIMEOUT = 120
@@ -25,6 +31,17 @@ PROFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wa-chrom
 OLLAMA_MODEL = "gemma3:1b"
 AUTO_REPLY = True
 TEST_MODE = True
+
+
+def _ding() -> None:
+    if sys.platform.startswith("win") and winsound is not None:
+        # Short system beep on Windows when login completes.
+        try:
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            print("\a", end="", flush=True)
+    else:
+        print("\a", end="", flush=True)
 
 
 def create_driver() -> webdriver.Chrome:
@@ -124,15 +141,24 @@ def _is_from_me(meta: str) -> bool:
 
 
 def ollama_reply(incoming: str) -> str:
-    """Generate a short chat reply via local Ollama."""
+    """Generate 3 reply options, pick one."""
     try:
         import ollama
-        prompt = f"Reply briefly and naturally to this message in 1-2 sentences:\n{incoming}"
+        prompt = (
+            f"They said: {incoming}\n\n"
+            "List 3 short reply options (one per line, 1-6 words each). Simple words only. "
+            "Put the best one as the last line.\n"
+        )
         out = ollama.generate(model=OLLAMA_MODEL, prompt=prompt, stream=False)
-        reply = (out.get("response") or "").strip()
-        if "\n" in reply:
-            reply = reply.split("\n")[0]
-        return reply[:500]
+        raw = (out.get("response") or "").strip()
+        lines = [l.strip().lstrip("-123.) ").strip() for l in raw.split("\n") if l.strip()]
+        options = [l for l in lines if 0 < len(l) < 80][:3]
+        if options:
+            chosen = options[-1]
+            for i, opt in enumerate(options, 1):
+                print(f"  [{i}] {opt}")
+            return chosen[:200]
+        return (raw.split("\n")[0].strip() or "")[:200]
     except Exception as e:
         print(f"[OLLAMA ERR] {e}")
         return ""
@@ -217,10 +243,11 @@ def run() -> None:
                         if not TEST_MODE:
                             should_reply = should_reply and not from_me
                         if should_reply:
-                            print("[OLLAMA] Generating reply...")
+                            print(f"[REPLYING TO] {txt[:60]}{'...' if len(txt) > 60 else ''}")
                             reply = ollama_reply(txt)
                             if reply:
                                 sent_texts = (sent_texts + [reply.strip()])[-5:]
+                                print(f"[CHOSE] {reply[:60]}{'...' if len(reply) > 60 else ''}")
                                 print("[SEND] Typing into chat...")
                                 if send_whatsapp_message(driver, reply):
                                     snip = reply[:60] + ("..." if len(reply) > 60 else "")
@@ -240,6 +267,7 @@ def run() -> None:
         if not wait_for_qr_scan(driver):
             print("[FAIL] QR scan timeout or not detected.")
             return
+        _ding()
         print("[3/5] Logged in. Finding chat list...")
         time.sleep(2)
         try:
